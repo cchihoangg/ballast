@@ -44,6 +44,14 @@ async function hashPasscode(pc){
   for(let i=0;i<norm.length;i++){ h ^= norm.charCodeAt(i); h = Math.imul(h, 16777619); }
   return 'room_' + (h>>>0).toString(16);
 }
+// JSON with keys in sorted order. Firestore hands objects back with keys re-ordered, so comparing
+// plain JSON.stringify output made every one of our own saves look like a change from another
+// device (full reload + "updated just now" each time). Sorted keys compare equal.
+function stableStringify(v){
+  return JSON.stringify(v, (k, val) => (val && typeof val === 'object' && !Array.isArray(val))
+    ? Object.keys(val).sort().reduce((o, key) => { o[key] = val[key]; return o; }, {})
+    : val);
+}
 function isTypingActive(){
   const el = document.activeElement;
   if(!el) return false;
@@ -177,9 +185,12 @@ function attachListener(){
       setStatus('synced · '+syncLabel()+' (created here)');
       return;
     }
+    // Our own write echoing back before the server confirms it: nothing new to load.
+    if(snap.metadata && snap.metadata.hasPendingWrites) return;
     const data = snap.data() || {};
-    const json = JSON.stringify(data.memory||{});
-    if(json === lastPushedJSON){ setStatus('synced · '+syncLabel()); return; }
+    const remoteJson = stableStringify(data.memory||{});
+    // Same as what we last saved, or same as what's already on screen: not a change from elsewhere.
+    if(remoteJson === lastPushedJSON || remoteJson === stableStringify(memory)){ setStatus('synced · '+syncLabel()); return; }
     // Change came from another device
     Object.keys(memory).forEach(k=>delete memory[k]);
     Object.assign(memory, data.memory||{});
@@ -202,7 +213,7 @@ async function pushMemory(){
   let safe;
   try{ safe = JSON.parse(JSON.stringify(memory)); }catch(e){ safe = memory; }
   const json = JSON.stringify(safe);
-  lastPushedJSON = json;
+  lastPushedJSON = stableStringify(safe);
   // Firestore documents max out at 1 MiB and the whole store lives in one doc — warn well before that.
   if(json.length > 850000) setStatus('sync almost full ('+Math.round(json.length/1024)+' KB of 1024) — export a backup and trim old data');
   try{
